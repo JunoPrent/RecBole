@@ -47,6 +47,8 @@ from recbole.utils import (
 )
 from torch.nn.parallel import DistributedDataParallel
 
+import csv
+
 
 class AbstractTrainer(object):
     r"""Trainer Class is used to manage the training and evaluation processes of recommender system models.
@@ -216,6 +218,7 @@ class Trainer(AbstractTrainer):
             tuple which includes the sum of loss in each part.
         """
         self.model.train()
+        self.model.epoch_idx = epoch_idx
         loss_func = loss_func or self.model.calculate_loss
         total_loss = None
         iter_data = (
@@ -506,6 +509,10 @@ class Trainer(AbstractTrainer):
                     callback_fn(epoch_idx, valid_score)
 
                 if stop_flag:
+                    if hasattr(self.model, "tracking_data"):
+                        with open("tracking_data.csv", "w") as f:
+                            writer = csv.writer(f)
+                            writer.writerows(self.model.tracking_data)
                     stop_output = "Finished training, best eval result in epoch %d" % (
                         epoch_idx - self.cur_step * self.eval_step
                     )

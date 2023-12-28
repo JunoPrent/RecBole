@@ -104,6 +104,7 @@ class GeneralRecommender(AbstractRecommender):
         self.NEG_ITEM_ID = config["NEG_PREFIX"] + self.ITEM_ID
         self.n_users = dataset.num(self.USER_ID)
         self.n_items = dataset.num(self.ITEM_ID)
+        self.tracking_data = []
 
         # load parameters info
         self.device = config["device"]

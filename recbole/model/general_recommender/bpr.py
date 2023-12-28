@@ -80,6 +80,8 @@ class BPR(GeneralRecommender):
             user_e, neg_e
         ).sum(dim=1)
         loss = self.loss(pos_item_score, neg_item_score)
+        self.tracking_data += list(zip([int(self.epoch_idx)] * len(user), user.numpy(), pos_item.numpy(), pos_item_score.data.numpy(), loss.data.numpy()))
+        loss = loss.mean()
         return loss
 
     def predict(self, interaction):

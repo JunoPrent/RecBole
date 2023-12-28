@@ -40,6 +40,7 @@ from recbole.utils.url import (
     rename_atomic_files,
 )
 
+import json
 
 class Dataset(torch.utils.data.Dataset):
     """:class:`Dataset` stores the original dataset in memory.
@@ -1164,9 +1165,14 @@ class Dataset(torch.utils.data.Dataset):
 
     def _remap_ID_all(self):
         """Remap all token-like fields."""
+        self.remappings = {}
         for alias in self.alias.values():
+            self.alias = alias[0]
             remap_list = self._get_remap_list(alias)
             self._remap(remap_list)
+
+        with open("dataset/remappings.json", "w") as f:
+            f.write(json.dumps(self.remappings, indent=4))
 
         for field in self._rest_fields:
             remap_list = self._get_remap_list(np.array([field]))
@@ -1206,6 +1212,8 @@ class Dataset(torch.utils.data.Dataset):
         new_ids_list = np.split(new_ids_list + 1, split_point)
         mp = np.array(["[PAD]"] + list(mp))
         token_id = {t: i for i, t in enumerate(mp)}
+
+        self.remappings[self.alias] = token_id
 
         for (feat, field, ftype), new_ids in zip(remap_list, new_ids_list):
             if field not in self.field2id_token:

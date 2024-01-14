@@ -72,7 +72,7 @@ class FISM(GeneralRecommender):
         )
         self.user_bias = nn.Parameter(torch.zeros(self.n_users))
         self.item_bias = nn.Parameter(torch.zeros(self.n_items))
-        self.bceloss = nn.BCEWithLogitsLoss()
+        self.bceloss = nn.BCEWithLogitsLoss(reduction="none")
 
         # parameters initialization
         self.apply(self._init_weights)
@@ -182,6 +182,8 @@ class FISM(GeneralRecommender):
         label = interaction[self.LABEL]
         output = self.forward(user, item)
         loss = self.bceloss(output, label) + self.reg_loss()
+        self.tracking_data += list(zip([int(self.epoch_idx)] * len(user), user.numpy(), item.numpy(), output.data.numpy(), loss.data.numpy()))
+        loss = loss.mean()
         return loss
 
     def full_sort_predict(self, interaction):

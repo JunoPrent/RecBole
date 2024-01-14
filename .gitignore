@@ -14,5 +14,12 @@ docs/build/
 wandb/*
 /ray_log*
 
+dataset/goodreads
+dataset/google_reviews
+dataset/yelp
 dataset/remappings
+dataset/remappings.json
 dataset/training_losses
+hyper.test
+hyper_example*
+job.job

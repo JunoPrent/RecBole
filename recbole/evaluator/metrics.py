@@ -56,6 +56,8 @@ class Hit(TopkMetric):
     def calculate_metric(self, dataobject):
         pos_index, _ = self.used_info(dataobject)
         result = self.metric_info(pos_index)
+        # for group_idx in set(self.mainstream_labels):
+        #     print("Hit", group_idx, self.topk_result("test", np.array([result[user_idx - 1] for user_idx in self.mainstream_labels.loc[self.mainstream_labels == group_idx].index])))
         metric_dict = self.topk_result("hit", result)
         return metric_dict
 
@@ -82,6 +84,8 @@ class MRR(TopkMetric):
     def calculate_metric(self, dataobject):
         pos_index, _ = self.used_info(dataobject)
         result = self.metric_info(pos_index)
+        # for group_idx in set(self.mainstream_labels):
+        #     print("MRR", group_idx, self.topk_result("test", np.array([result[user_idx - 1] for user_idx in self.mainstream_labels.loc[self.mainstream_labels == group_idx].index])))
         metric_dict = self.topk_result("mrr", result)
         return metric_dict
 
@@ -153,6 +157,8 @@ class Recall(TopkMetric):
     def calculate_metric(self, dataobject):
         pos_index, pos_len = self.used_info(dataobject)
         result = self.metric_info(pos_index, pos_len)
+        # for group_idx in set(self.mainstream_labels):
+        #     print("Recall", group_idx, self.topk_result("test", np.array([result[user_idx - 1] for user_idx in self.mainstream_labels.loc[self.mainstream_labels == group_idx].index])))
         metric_dict = self.topk_result("recall", result)
         return metric_dict
 
@@ -180,6 +186,8 @@ class NDCG(TopkMetric):
     def calculate_metric(self, dataobject):
         pos_index, pos_len = self.used_info(dataobject)
         result = self.metric_info(pos_index, pos_len)
+        # for group_idx in set(self.mainstream_labels):
+        #     print("NDCG", group_idx, self.topk_result("test", np.array([result[user_idx - 1] for user_idx in self.mainstream_labels.loc[self.mainstream_labels == group_idx].index])))
         metric_dict = self.topk_result("ndcg", result)
         return metric_dict
 
@@ -220,6 +228,8 @@ class Precision(TopkMetric):
     def calculate_metric(self, dataobject):
         pos_index, _ = self.used_info(dataobject)
         result = self.metric_info(pos_index)
+        # for group_idx in set(self.mainstream_labels):
+        #     print("Precision", group_idx, self.topk_result("test", np.array([result[user_idx - 1] for user_idx in self.mainstream_labels.loc[self.mainstream_labels == group_idx].index])))
         metric_dict = self.topk_result("precision", result)
         return metric_dict
 

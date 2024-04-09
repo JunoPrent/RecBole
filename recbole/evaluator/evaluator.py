@@ -12,6 +12,9 @@ from recbole.evaluator.register import metrics_dict
 from recbole.evaluator.collector import DataStruct
 from collections import OrderedDict
 
+import pandas as pd
+import json
+
 
 class Evaluator(object):
     """Evaluator is used to check parameter correctness, and summarize the results of all metrics."""
@@ -21,8 +24,14 @@ class Evaluator(object):
         self.metrics = [metric.lower() for metric in self.config["metrics"]]
         self.metric_class = {}
 
+        self.mainstream_labels = pd.read_csv(f"dataset/{config['dataset']}/{config['dataset']}.user", sep="\t", engine="python", index_col=0, header=0)["mainstream class (even groups)"]
+        with open(f"dataset/remappings/{config['dataset']}.json") as f:
+            remappings = json.load(f)
+        self.mainstream_labels = pd.Series(self.mainstream_labels.values, index=[remappings["user_id"][str(i)] for i in self.mainstream_labels.index])
+
         for metric in self.metrics:
             self.metric_class[metric] = metrics_dict[metric](self.config)
+            self.metric_class[metric].mainstream_labels = self.mainstream_labels
 
     def evaluate(self, dataobject: DataStruct):
         """calculate all the metrics. It is called at the end of each epoch

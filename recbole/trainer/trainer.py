@@ -433,6 +433,20 @@ class Trainer(AbstractTrainer):
             hparam_dict, {"hparam/best_valid_result": best_valid_result}
         )
 
+    def gini_coefficient(self, x):
+        # """Compute Gini coefficient of array of values"""
+        # x = np.array(x)
+        # diffsum = 0
+        # for i, xi in enumerate(x[:-1], 1):
+        #     diffsum += np.sum(np.abs(xi - x[i:]))
+        # return diffsum / (len(x)**2 * np.mean(x))
+
+        x = np.array(x)
+        N = len(x)
+        
+        return (1/(N-1))*sum(np.array([(2*k - N - 1) for k in range(1, len(x)+1)]) * sorted(x))
+
+
     def fit(
         self,
         train_data,
@@ -645,6 +659,11 @@ class Trainer(AbstractTrainer):
 
         # num_sample = 0
 
+        if gini or upd:
+            all_predicted_items = {item_idx: [] for item_idx in range(1, self.tot_item_num)}
+
+        if upd:
+            prediction_dist = {}
 
         if calibrate:
             self.eval_collector.same_items = []
@@ -666,9 +685,43 @@ class Trainer(AbstractTrainer):
                 scores, interaction, positive_u, positive_i, self.model.train_data_dist[user_idx], calibrate
             )
 
+            if gini or upd:
+                item_ids = self.eval_collector.topk_idx.tolist()
+                for item_idx in item_ids:
+                    all_predicted_items[item_idx].append(item_ids.index(item_idx) + 1)
+
+            if upd:
+                prediction_dist[user_idx] = torch.tensor([(self.eval_collector.item_labels.loc[self.eval_collector.topk_idx].values == item_label).sum() / len(self.eval_collector.topk_idx) for item_label in ["H", "M", "T"]])
+                self.model.train_data_dist[user_idx] = np.array([sum(np.array(self.model.train_data_dist[user_idx]) == item_label) / len(self.model.train_data_dist[user_idx]) for item_label in ["H", "M", "T"]])
 
             if store_predictions:
                 pred_dict[user_idx] = self.eval_collector.topk_idx.tolist()
+
+        if gini:
+            item_freqs_binary = np.array([len(all_predicted_items[item_idx]) for item_idx in all_predicted_items.keys()], dtype='float64')
+            item_freqs_binary_merit = np.array([len(all_predicted_items[item_idx]) / scores[0][item_idx] for item_idx in all_predicted_items.keys()], dtype='float64')
+            item_freqs_binary /= sum(item_freqs_binary)
+            item_freqs_binary_merit /= sum(item_freqs_binary_merit)
+
+            item_freqs_positional = np.array([sum(np.log(np.array(all_predicted_items[item_idx]) + 1)**-1) for item_idx in all_predicted_items.keys()])
+            item_freqs_positional_merit = np.array([sum(np.log(np.array(all_predicted_items[item_idx]) + 1)**-1) / scores[0][item_idx] for item_idx in all_predicted_items.keys()])
+            item_freqs_positional /= sum(item_freqs_positional)
+            item_freqs_positional_merit /= sum(item_freqs_positional_merit)
+
+            print(self.gini_coefficient(sorted(item_freqs_binary, reverse=True)), self.gini_coefficient(sorted(item_freqs_positional, reverse=True)))
+            print(self.gini_coefficient(sorted([v for v in item_freqs_binary if v > 0.0], reverse=True)), self.gini_coefficient(sorted([v for v in item_freqs_positional if v > 0.0], reverse=True)))
+
+            # print(self.gini_coefficient(sorted(item_freqs_binary_merit, reverse=True)), self.gini_coefficient(sorted(item_freqs_positional_merit, reverse=True)))
+            # print(self.gini_coefficient(sorted([v for v in item_freqs_binary_merit if v > 0.0], reverse=True)), self.gini_coefficient(sorted([v for v in item_freqs_positional_merit if v > 0.0], reverse=True)))
+
+        if upd:
+            upd = {user_idx: scipy.spatial.distance.jensenshannon(prediction_dist[user_idx] + 0.0001, torch.tensor(self.model.train_data_dist[user_idx]) + 0.0001)**2 for user_idx in prediction_dist.keys()}    
+            # upd = {user_idx: scipy.stats.entropy(prediction_dist[user_idx] + 0.0001, torch.tensor(self.model.train_data_dist[user_idx]) + 0.0001) for user_idx in prediction_dist.keys()}
+            upd = [(user_label, np.array([upd[user_idx] for user_idx in list((self.eval_collector.user_labels.loc[self.eval_collector.user_labels == user_label]).index)]).mean()) for user_label in range(5)]
+
+            print(f"UPD: {upd}")
+            print(f"UPD avg: {sum([t[1] for t in upd]) / len(upd)}")
+            print(f"Unique items predicted: {len([all_predicted_items[i] for i in all_predicted_items.keys() if len(all_predicted_items[i]) > 0])}")
 
         if calibrate:
             print(f"Same items as before calibration: {round(np.array(self.eval_collector.same_items).mean(), 2)}%")

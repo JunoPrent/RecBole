@@ -15,15 +15,24 @@ def item_preprocess(item_info, inter_info):
     item_info["total ratings (%)"] = {item_idx: len(all_item_ratings[item_idx]) / len(inter_info.index) for item_idx in all_item_ratings.keys()}
 
     # Finds the most popular items that comprise 20% of the total amount of ratings (113 total)
-    pop_threshold = 0.2
+    H_threshold, T_threshold = 0.2, 0.2
+    pop_labels = {i: "M" for i in item_info.index}
+
     cumulative_total = 0.0
-    pop_labels = {}
     for i in item_info.sort_values("total ratings (%)", ascending=False).index:
-        if cumulative_total > pop_threshold:
-            pop_labels[i] = 0
-        else:
+        if cumulative_total < H_threshold:
+            pop_labels[i] = "H"
             cumulative_total += item_info.loc[i]["total ratings (%)"]
-            pop_labels[i] = 1
+        else:
+            break
+
+    cumulative_total = 0.0
+    for i in item_info.sort_values("total ratings (%)", ascending=True).index:
+        if cumulative_total < T_threshold:
+            pop_labels[i] = "T"
+            cumulative_total += item_info.loc[i]["total ratings (%)"]
+        else:
+            break
 
     item_info["popular item"] = pop_labels
 
@@ -39,8 +48,10 @@ def user_preprocess(user_info, item_info, inter_info):
         if len(user_items[u]) == 0:
             print(u)
 
+        # Fraction of popular items rated by each user
+    user_info["items rated"] = {user_idx: (None if not user_items[user_idx] else len(user_items[user_idx])) for user_idx in user_info.index}            
     # Fraction of popular items rated by each user
-    user_info["popular items rated (%)"] = {user_idx: (None if not user_items[user_idx] else item_info.loc[user_items[user_idx]]["popular item"].sum() / len(user_items[user_idx])) for user_idx in user_info.index}
+    user_info["popular items rated (%)"] = {user_idx: (None if not user_items[user_idx] else len(item_info.loc[user_items[user_idx]].loc[item_info["popular item"] == "H"]) / len(user_items[user_idx])) for user_idx in user_info.index}
     # Whether a user is mainstream (1) or not (0) based on the threshold
     user_info["mainstream user"] = {user_idx: int(user_info["popular items rated (%)"].loc[user_idx] >= user_pop_threshold) for user_idx in user_info.index}
 

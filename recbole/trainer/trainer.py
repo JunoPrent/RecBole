@@ -49,6 +49,10 @@ from torch.nn.parallel import DistributedDataParallel
 
 import csv
 
+import pandas as pd
+import json
+import scipy
+
 
 class AbstractTrainer(object):
     r"""Trainer Class is used to manage the training and evaluation processes of recommender system models.
@@ -143,6 +147,19 @@ class Trainer(AbstractTrainer):
         self.optimizer = self._build_optimizer()
         self.eval_type = config["eval_type"]
         self.eval_collector = Collector(config)
+
+        self.item_info = pd.read_csv(f"dataset/{self.config['dataset']}/{self.config['dataset']}.item", sep="\t", engine="python", index_col=0, header=0)
+        with open(f"dataset/remappings/{self.config['dataset']}.json") as f:
+            remappings = json.load(f)
+        
+        self.eval_collector.user_labels = pd.read_csv(f"dataset/{self.config['dataset']}/{self.config['dataset']}.user", sep="\t", engine="python", index_col=0, header=0)["mainstream class (even groups)"]
+        self.eval_collector.user_labels = pd.Series(self.eval_collector.user_labels.values, index=[remappings["user_id"][str(i)] for i in self.eval_collector.user_labels.index])
+        self.eval_collector.item_labels = self.item_info.loc[self.item_info["total ratings (%)"] > 0]["popular item"]
+        self.eval_collector.item_labels = pd.Series(self.eval_collector.item_labels.values, index=[remappings["item_id"][str(i)] for i in self.eval_collector.item_labels.index])
+
+        self.model.user_labels = self.eval_collector.user_labels
+        self.model.item_labels = self.eval_collector.item_labels
+
         self.evaluator = Evaluator(config)
         self.item_tensor = None
         self.tot_item_num = None
@@ -262,14 +279,26 @@ class Trainer(AbstractTrainer):
                 )
             self._check_nan(loss)
             scaler.scale(loss + sync_loss).backward()
-            if self.clip_grad_norm:
-                clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
+            # for name, para in self.model.named_parameters():
+            #     if "user" in name:
+            #         idx, grad = self.model.test_grads
+            #         u = idx[0]
+            #         u_grad = [grad[i][0] for i in range(len(idx)) if idx[i] == u]
+            #         print(f"\n{u} test: {sum(u_grad)} {u_grad}")
+            #         print(f"{u} para: {para.grad[u][0]}")
+            
+            # if self.clip_grad_norm:
+            #     clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
             scaler.step(self.optimizer)
             scaler.update()
-            if self.gpu_available and show_progress:
-                iter_data.set_postfix_str(
-                    set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
-                )
+            # if self.gpu_available and show_progress:
+            #     iter_data.set_postfix_str(
+            #         set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
+            #     )
+
+        # if self.model.epoch_idx == 0:
+        #     self.model.train_data_dist = {user_idx: [(np.array(self.model.train_data_dist[user_idx]) == item_label).sum() / len(self.model.train_data_dist[user_idx]) if len(self.model.train_data_dist[user_idx]) > 0 else np.array([0.0]) for item_label in ["H", "M", "T"]] for user_idx in self.model.train_data_dist.keys()}
+        
         return total_loss
 
     def _valid_epoch(self, valid_data, show_progress=False):
@@ -509,10 +538,6 @@ class Trainer(AbstractTrainer):
                     callback_fn(epoch_idx, valid_score)
 
                 if stop_flag:
-                    if hasattr(self.model, "tracking_data"):
-                        with open("tracking_data.csv", "w") as f:
-                            writer = csv.writer(f)
-                            writer.writerows(self.model.tracking_data)
                     stop_output = "Finished training, best eval result in epoch %d" % (
                         epoch_idx - self.cur_step * self.eval_step
                     )
@@ -567,7 +592,7 @@ class Trainer(AbstractTrainer):
 
     @torch.no_grad()
     def evaluate(
-        self, eval_data, load_best_model=True, model_file=None, show_progress=False
+        self, eval_data, load_best_model=True, model_file=None, show_progress=False, calibrate=False, gini=False, upd=False
     ):
         r"""Evaluate the model based on the eval data.
 
@@ -617,22 +642,50 @@ class Trainer(AbstractTrainer):
             else eval_data
         )
 
-        num_sample = 0
+
+        # num_sample = 0
+
+
+        if calibrate:
+            self.eval_collector.same_items = []
+            self.eval_collector.score_avgs = [[], [], []]
+
+        store_predictions = False
+        if store_predictions:
+            pred_dict = {}
+
         for batch_idx, batched_data in enumerate(iter_data):
-            num_sample += len(batched_data)
+            # num_sample += len(batched_data)
+            user_idx = batch_idx + 1
             interaction, scores, positive_u, positive_i = eval_func(batched_data)
             if self.gpu_available and show_progress:
                 iter_data.set_postfix_str(
                     set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
                 )
             self.eval_collector.eval_batch_collect(
-                scores, interaction, positive_u, positive_i
+                scores, interaction, positive_u, positive_i, self.model.train_data_dist[user_idx], calibrate
             )
-        self.eval_collector.model_collect(self.model)
+
+
+            if store_predictions:
+                pred_dict[user_idx] = self.eval_collector.topk_idx.tolist()
+
+        if calibrate:
+            print(f"Same items as before calibration: {round(np.array(self.eval_collector.same_items).mean(), 2)}%")
+            print(f"Avg of top-10 scores: {np.array(self.eval_collector.score_avgs[0]).mean()}")
+            print(f"Avg of 11-20 scores: {np.array(self.eval_collector.score_avgs[1]).mean()}")
+            print(f"Avg of 11-50 scores: {np.array(self.eval_collector.score_avgs[2]).mean()}")
+
+        if store_predictions:
+            with open("predictions.json", "w") as f:
+                json.dump(pred_dict, f)
+
+
+        # self.eval_collector.model_collect(self.model)
         struct = self.eval_collector.get_data_struct()
         result = self.evaluator.evaluate(struct)
-        if not self.config["single_spec"]:
-            result = self._map_reduce(result, num_sample)
+        # if not self.config["single_spec"]:
+        #     result = self._map_reduce(result, num_sample)
         self.wandblogger.log_eval_metrics(result, head="eval")
         return result
 

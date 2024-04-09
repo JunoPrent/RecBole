@@ -16,6 +16,10 @@ from recbole.evaluator.register import Register
 import torch
 import copy
 
+import numpy as np
+import scipy
+from itertools import combinations
+
 
 class DataStruct(object):
     def __init__(self):
@@ -140,6 +144,8 @@ class Collector(object):
         interaction,
         positive_u: torch.Tensor,
         positive_i: torch.Tensor,
+        user_history_dist=None,
+        calibrate=False
     ):
         """Collect the evaluation resource from batched eval data and batched model output.
         Args:
@@ -156,9 +162,59 @@ class Collector(object):
             self.data_struct.update_tensor("rec.items", topk_idx)
 
         if self.register.need("rec.topk"):
-            _, topk_idx = torch.topk(
-                scores_tensor, max(self.topk), dim=-1
-            )  # n_users x k
+            if calibrate:
+                sorted_scores = np.array(sorted(scores_tensor[0], reverse=True))
+                self.score_avgs[0].append(sorted_scores[:10].mean())
+                self.score_avgs[1].append(sorted_scores[10:20].mean())
+                self.score_avgs[2].append(sorted_scores[10:50].mean())                
+                weight = 0.99
+                self.topm = [100]
+                _, topm_idx = torch.topk(
+                scores_tensor, max(self.topm), dim=-1
+                )  # n_users x k
+                self.topm_idx = topm_idx[0]
+
+                item_ids = self.topm_idx.tolist()
+                item_info = {item_id: {"score": scores_tensor[0][item_id], "label": self.item_labels.iloc[int(item_id) - 1]} for item_id in item_ids}
+                user_history_dist = np.array([sum(np.array(user_history_dist) == item_label) / len(user_history_dist) for item_label in ["H", "M", "T"]])
+                topk_idx = [[]]
+                final_predictions = {}
+
+                # best_comb = (None, -np.inf)
+
+                # for item_comb in combinations(self.topm_idx, self.topk[0]):
+                #     item_comb = torch.tensor(item_comb).tolist()
+                #     comb_score = sum([item_info[int(item_id)]["score"] for item_id in item_comb])
+                #     comb_dist = np.array([sum([int(item_info[item_id]["label"] == item_label) for item_id in item_comb]) / len(item_comb) for item_label in ["H", "M", "T"]])
+                #     comb_relevance = (1 - weight) * comb_score - weight * scipy.spatial.distance.jensenshannon(comb_dist + 0.0001, user_history_dist + 0.0001)**2
+                #     if comb_relevance > best_comb[1]:
+                #         best_comb = ([list(item_comb)], comb_relevance)
+
+                # topk_idx = torch.tensor(best_comb[0])
+                # self.topk_idx = topk_idx[0]
+
+                for _ in range(self.topk[0]):
+                    current_pred_dist = np.array([sum([final_predictions[item_id]["label"] == item_label for item_id in final_predictions.keys()]) for item_label in ["H", "M", "T"]])
+                    item_dists = {item_id: (current_pred_dist + np.array([int(item_info[item_id]["label"] == item_label) for item_label in ["H", "M", "T"]])) / (sum(current_pred_dist) + 1) for item_id in item_info.keys()}
+                    item_relevance = {item_id: (1 - weight) * item_info[item_id]["score"] - weight * scipy.spatial.distance.jensenshannon(item_dists[item_id] + 0.0001, user_history_dist + 0.0001)**2 for item_id in item_info.keys()}
+                    best_score_id = max(item_relevance, key=item_relevance.get)
+                    best_score_info = item_info.pop(best_score_id)
+                    final_predictions[best_score_id] = best_score_info
+                    final_predictions[best_score_id]["relevance"] = item_relevance[best_score_id]
+                    topk_idx[0].append(best_score_id)
+                
+                topk_idx = torch.tensor(topk_idx)
+                self.topk_idx = topk_idx[0]
+
+                # print("\n", self.topk_idx.tolist(), "\n", self.topm_idx[:len(self.topk_idx)].tolist(), np.isin(self.topk_idx, self.topm_idx[:len(self.topk_idx)]).mean())
+                self.same_items.append(np.isin(self.topk_idx, self.topm_idx[:len(self.topk_idx)]).mean())
+
+            else:
+                _, topk_idx = torch.topk(
+                    scores_tensor, max(self.topk), dim=-1
+                )  # n_users x k
+                self.topk_idx = topk_idx[0]
+            
             pos_matrix = torch.zeros_like(scores_tensor, dtype=torch.int)
             pos_matrix[positive_u, positive_i] = 1
             pos_len_list = pos_matrix.sum(dim=1, keepdim=True)

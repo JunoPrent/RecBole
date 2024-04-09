@@ -35,6 +35,8 @@ from recbole.utils import (
     get_environment,
 )
 
+from time import time
+
 
 def run(
     model,
@@ -111,6 +113,7 @@ def run_recbole(
         saved (bool, optional): Whether to save the model. Defaults to ``True``.
         queue (torch.multiprocessing.Queue, optional): The queue used to pass the result to the main process. Defaults to ``None``.
     """
+    start = time()
     # configurations initialization
     config = Config(
         model=model,
@@ -151,7 +154,7 @@ def run_recbole(
 
     # model evaluation
     test_result = trainer.evaluate(
-        test_data, load_best_model=saved, show_progress=config["show_progress"]
+        test_data, load_best_model=saved, show_progress=config["show_progress"], calibrate=False, gini=True, upd=True
     )
 
     environment_tb = get_environment(config)
@@ -176,6 +179,7 @@ def run_recbole(
     if config["local_rank"] == 0 and queue is not None:
         queue.put(result)  # for multiprocessing, e.g., mp.spawn
 
+    print(f"TIME: {time() - start}")
     return result  # for the single process
 
 

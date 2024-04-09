@@ -44,7 +44,34 @@ class BPRLoss(nn.Module):
 
     def forward(self, pos_score, neg_score):
         loss = -torch.log(self.gamma + torch.sigmoid(pos_score - neg_score))
-        return loss
+        # label_count = len(set(self.batch_labels))
+        fairness = 0
+        
+        if any(self.lambdas):
+            # # G = torch.tensor([[int(i == j) * (i+1) for j in self.batch_labels] for i in sorted(set(self.batch_labels))])
+            # G = torch.tensor([[int(i == j) for j in self.batch_labels] for i in sorted(set(self.batch_labels))])
+            Gi = torch.tensor([[int(i == j) for j in self.batch_item_labels] for i in ["H", "M", "T"]])
+            # group_avgs = torch.mul(loss, G).sum(dim=1) / G.sum(dim=1)
+            group_avgs_item = torch.mul(loss, Gi).sum(dim=1) / Gi.sum(dim=1)
+            # print(group_avgs_item)
+
+            # std
+            if self.lambdas[0] > 0.0:
+                # fairness += self.lambdas[0] * torch.std(group_avgs)
+                fairness += self.lambdas[0] * torch.std(group_avgs_item)
+            # entropy
+            if self.lambdas[1] > 0.0:
+                fairness += self.lambdas[1] * (len(group_avgs) - torch.exp(torch.distributions.Categorical(group_avgs).entropy()))
+            # euclidean
+            if self.lambdas[2] > 0.0:
+                # fairness += self.lambdas[2] * torch.dist(group_avgs, torch.tensor([0., 0., 0., 0., 0.]), 2)
+                fairness += self.lambdas[2] * torch.dist(group_avgs, group_avgs.mean().repeat(len(group_avgs)), 2)
+            #kl-divergence
+            if self.lambdas[3] > 0.0:
+                kl_div = torch.nn.KLDivLoss(reduction="batchmean")
+                fairness += self.lambdas[3] * abs(kl_div(group_avgs.mean().repeat(len(group_avgs)), group_avgs))
+            # print(loss.mean(), fairness)
+        return loss + fairness
 
 
 class RegLoss(nn.Module):

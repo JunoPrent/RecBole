@@ -154,7 +154,7 @@ def run_recbole(
 
     # model evaluation
     test_result = trainer.evaluate(
-        test_data, load_best_model=saved, show_progress=config["show_progress"], calibrate=False, gini=True, upd=True
+        test_data, load_best_model=saved, show_progress=config["show_progress"], calibrate=False, uncertainty=False, gini=True, upd=True
     )
 
     environment_tb = get_environment(config)

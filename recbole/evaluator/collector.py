@@ -20,6 +20,8 @@ import numpy as np
 import scipy
 from itertools import combinations
 
+import json
+
 
 class DataStruct(object):
     def __init__(self):
@@ -145,7 +147,8 @@ class Collector(object):
         positive_u: torch.Tensor,
         positive_i: torch.Tensor,
         user_history_dist=None,
-        calibrate=False
+        calibrate=False,
+        uncertainty=False
     ):
         """Collect the evaluation resource from batched eval data and batched model output.
         Args:
@@ -167,19 +170,48 @@ class Collector(object):
                 self.score_avgs[0].append(sorted_scores[:10].mean())
                 self.score_avgs[1].append(sorted_scores[10:20].mean())
                 self.score_avgs[2].append(sorted_scores[10:50].mean())                
-                weight = 0.99
-                self.topm = [100]
+                weight = 0.97
+                self.topm = [200]
+
                 _, topm_idx = torch.topk(
                 scores_tensor, max(self.topm), dim=-1
-                )  # n_users x k
+                )  # n_users x m
                 self.topm_idx = topm_idx[0]
 
+                # Stores the initial m predictions (so the large list)
                 item_ids = self.topm_idx.tolist()
+                # Stores some item info
                 item_info = {item_id: {"score": scores_tensor[0][item_id], "label": self.item_labels.iloc[int(item_id) - 1]} for item_id in item_ids}
+                # Stores the distribution of each user's training data item labels 
                 user_history_dist = np.array([sum(np.array(user_history_dist) == item_label) / len(user_history_dist) for item_label in ["H", "M", "T"]])
                 topk_idx = [[]]
-                final_predictions = {}
+                new_predictions = {}
 
+                # Repeats the process k (10) times
+                for _ in range(self.topk[0]):
+                    # Counts how often each item label occurs in the new prediction so far (so [0, 0, 0] at the start)
+                    # Doesn't normalize the counts yet
+                    current_pred_dist = np.array([sum([new_predictions[item_id]["label"] == item_label for item_id in new_predictions.keys()]) for item_label in ["H", "M", "T"]])
+                    # For each item that could be added, item_dists stores how the counts would be when it is added to the new prediction
+                    # e.g. if no items are added yet and item 20 is an "M" item, then item_dists[20] = [0, 1, 0]
+                    # e.g. if the prediction already contains 2 "H" items and 1 "L" items, item_dists[20] = [0.50, 0.25, 0.25]
+                    item_dists = {item_id: (current_pred_dist + np.array([int(item_info[item_id]["label"] == item_label) for item_label in ["H", "M", "T"]])) / (sum(current_pred_dist) + 1) for item_id in item_info.keys()}
+                    # Stores the "relevance score" for each item, based on the item's initial score and the JS-divergence between user history
+                    # and the prediction's item label distribution if this item would be added to the new prediction
+                    item_relevance = {item_id: (1 - weight) * item_info[item_id]["score"] - weight * scipy.spatial.distance.jensenshannon(item_dists[item_id] + 0.0001, user_history_dist + 0.0001)**2 for item_id in item_info.keys()}
+                    # Obtains the id and info (label and initial score from the BPR model) for the item with the highest relevance
+                    best_score_id = max(item_relevance, key=item_relevance.get)
+                    best_score_info = item_info.pop(best_score_id)
+                    # Adds the item and its info to the new prediction
+                    new_predictions[best_score_id] = best_score_info
+                    new_predictions[best_score_id]["relevance"] = item_relevance[best_score_id]
+                    topk_idx[0].append(best_score_id)
+                
+                # Stores the new prediction with 10 items 
+                topk_idx = torch.tensor(topk_idx)
+                self.topk_idx = topk_idx[0]
+
+                ## Code for testing all possible combinations, unused in research
                 # best_comb = (None, -np.inf)
 
                 # for item_comb in combinations(self.topm_idx, self.topk[0]):
@@ -193,27 +225,40 @@ class Collector(object):
                 # topk_idx = torch.tensor(best_comb[0])
                 # self.topk_idx = topk_idx[0]
 
-                for _ in range(self.topk[0]):
-                    current_pred_dist = np.array([sum([final_predictions[item_id]["label"] == item_label for item_id in final_predictions.keys()]) for item_label in ["H", "M", "T"]])
-                    item_dists = {item_id: (current_pred_dist + np.array([int(item_info[item_id]["label"] == item_label) for item_label in ["H", "M", "T"]])) / (sum(current_pred_dist) + 1) for item_id in item_info.keys()}
-                    item_relevance = {item_id: (1 - weight) * item_info[item_id]["score"] - weight * scipy.spatial.distance.jensenshannon(item_dists[item_id] + 0.0001, user_history_dist + 0.0001)**2 for item_id in item_info.keys()}
-                    best_score_id = max(item_relevance, key=item_relevance.get)
-                    best_score_info = item_info.pop(best_score_id)
-                    final_predictions[best_score_id] = best_score_info
-                    final_predictions[best_score_id]["relevance"] = item_relevance[best_score_id]
-                    topk_idx[0].append(best_score_id)
-                
-                topk_idx = torch.tensor(topk_idx)
-                self.topk_idx = topk_idx[0]
-
                 # print("\n", self.topk_idx.tolist(), "\n", self.topm_idx[:len(self.topk_idx)].tolist(), np.isin(self.topk_idx, self.topm_idx[:len(self.topk_idx)]).mean())
                 self.same_items.append(np.isin(self.topk_idx, self.topm_idx[:len(self.topk_idx)]).mean())
+
+            elif uncertainty:
+                with open(f"uncertainty_{self.config['dataset']}_std.json") as f:
+                    item_uncertainty = json.load(f)
+                uncertainty_weight = 5.5
+
+                item_uncertainty = {int(key): item_uncertainty[key] for key in item_uncertainty.keys()}
+                positive_items = self.item_labels.loc[self.item_labels == "T"].index
+                negative_items = self.item_labels.loc[self.item_labels == "H"].index
+                scores_tensor[0][positive_items] += torch.tensor([item_uncertainty[key] for key in positive_items]) * uncertainty_weight
+                scores_tensor[0][negative_items] -= torch.tensor([item_uncertainty[key] for key in negative_items]) * uncertainty_weight
+                # print(self.item_labels.loc[torch.topk(
+                #     scores_tensor, max(self.topk), dim=-1
+                # )[1][0]])
+
+                _, topk_idx = torch.topk(
+                    scores_tensor, max(self.topk), dim=-1
+                )  # n_users x k
+                self.topk_idx = topk_idx[0]
 
             else:
                 _, topk_idx = torch.topk(
                     scores_tensor, max(self.topk), dim=-1
                 )  # n_users x k
                 self.topk_idx = topk_idx[0]
+
+                # for topm in self.unique_items.keys():
+                #     _, topm_idx = torch.topk(
+                #     scores_tensor, max([topm]), dim=-1
+                # )  # n_users x k
+                #     self.unique_items[topm] += topm_idx[0].tolist()
+
             
             pos_matrix = torch.zeros_like(scores_tensor, dtype=torch.int)
             pos_matrix[positive_u, positive_i] = 1

@@ -59,7 +59,7 @@ def user_preprocess(user_info, item_info, inter_info):
     user_info["mainstream class (thresholds)"] = {user_idx: math.floor(user_info["popular items rated (%)"].loc[user_idx] * 10) for user_idx in user_info.index}
     user_info.loc[user_info["mainstream class (thresholds)"] > 4, "mainstream class (thresholds)"] = 4
 
-    # Assigns mainstream classes based on fraction thresholds (every 0.2 a new class)
+    # Assigns mainstream classes based on evenly sized groups
     N = 5
     indices = user_info.sort_values("popular items rated (%)", ascending=False).index
     mainstream_classes = {}

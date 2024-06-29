@@ -42,6 +42,11 @@ class BPRLoss(nn.Module):
         super(BPRLoss, self).__init__()
         self.gamma = gamma
 
+    
+    def MAD(self, group_avgs):
+        return sum(abs(group_avgs - group_avgs.mean())) / len(group_avgs)
+
+
     def forward(self, pos_score, neg_score):
         loss = -torch.log(self.gamma + torch.sigmoid(pos_score - neg_score))
         # label_count = len(set(self.batch_labels))
@@ -61,16 +66,24 @@ class BPRLoss(nn.Module):
                 fairness += self.lambdas[0] * torch.std(group_avgs_item)
             # entropy
             if self.lambdas[1] > 0.0:
-                fairness += self.lambdas[1] * (len(group_avgs) - torch.exp(torch.distributions.Categorical(group_avgs).entropy()))
+                fairness += self.lambdas[1] * (len(group_avgs_item) - torch.exp(torch.distributions.Categorical(group_avgs_item).entropy()))
             # euclidean
             if self.lambdas[2] > 0.0:
-                # fairness += self.lambdas[2] * torch.dist(group_avgs, torch.tensor([0., 0., 0., 0., 0.]), 2)
-                fairness += self.lambdas[2] * torch.dist(group_avgs, group_avgs.mean().repeat(len(group_avgs)), 2)
-            #kl-divergence
+                # fairness += self.lambdas[2] * torch.dist(group_avgs_item, torch.tensor([0., 0., 0.]), 2)
+                fairness += self.lambdas[2] * torch.dist(group_avgs_item, group_avgs_item.mean().repeat(len(group_avgs_item)), 2)
+            # kl-divergence
             if self.lambdas[3] > 0.0:
                 kl_div = torch.nn.KLDivLoss(reduction="batchmean")
-                fairness += self.lambdas[3] * abs(kl_div(group_avgs.mean().repeat(len(group_avgs)), group_avgs))
-            # print(loss.mean(), fairness)
+                # fairness += self.lambdas[3] * abs(kl_div(group_avgs_item.mean().repeat(len(group_avgs_item)), group_avgs_item))
+                fairness += self.lambdas[3] * abs(kl_div(torch.tensor([0., 0., 0.]), group_avgs_item))
+            # mad
+            if self.lambdas[4] > 0.0:
+                # print(self.MAD(torch.tensor([1.0, 2.0, 3.0])))
+                fairness += self.lambdas[4] * self.MAD(group_avgs_item)
+        
+        if self.IPS:
+            loss = torch.div(loss, self.batch_item_counts)
+        
         return loss + fairness
 
 

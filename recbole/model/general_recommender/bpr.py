@@ -49,7 +49,8 @@ class BPR(GeneralRecommender):
 
         # self.item_labels = self.item_info.loc[self.item_info["total ratings (%)"] > 0]["popular item"]
         # self.item_labels = pd.Series(self.item_labels.values, index=[remappings["item_id"][str(i)] for i in self.item_labels.index])
-        self.lambdas = [1.0/3.0, 0.0, 0.0, 0.0]
+        self.lambdas = [0.0, 0.0, 0.0, 0.0, 0.0]
+        self.IPS = False
         # load parameters info
         self.embedding_size = config["embedding_size"]
 
@@ -59,6 +60,8 @@ class BPR(GeneralRecommender):
         self.loss = BPRLoss()
 
         self.train_data_dist = {user_idx: [] for user_idx in list(self.mainstream_labels.index)}
+        self.train_items = []
+        self.loss_path = f"dataset/training_losses/bpr/{config['dataset']}/0001-128_item.csv"
 
         # parameters initialization
         self.apply(xavier_normal_initialization)
@@ -98,6 +101,8 @@ class BPR(GeneralRecommender):
         self.loss.batch_labels = self.mainstream_labels.loc[user].values
         self.loss.batch_item_labels = self.item_labels.loc[pos_item].values
         self.loss.lambdas = self.lambdas
+        self.loss.IPS = self.IPS
+        self.loss.batch_item_counts = torch.tensor(self.train_item_counts.loc[pos_item].values)
 
         user_e, pos_e = self.forward(user, pos_item)
         neg_e = self.get_item_embedding(neg_item)
@@ -105,14 +110,16 @@ class BPR(GeneralRecommender):
             user_e, neg_e
         ).sum(dim=1)
         loss = self.loss(pos_item_score, neg_item_score)
-        # tracking_data = list(zip([int(self.epoch_idx)] * len(user), user.numpy(), pos_item.numpy(), pos_item_score.data.numpy(), loss.data.numpy()))
-        # with open("training_losses.csv", "a") as f:
-        #     writer = csv.writer(f)
-        #     writer.writerows(tracking_data)
+
+        tracking_data = list(zip([int(self.epoch_idx)] * len(user), user.numpy(), pos_item.numpy(), pos_item_score.data.numpy(), loss.data.numpy()))
+        with open(self.loss_path, "a") as f:
+            writer = csv.writer(f)
+            writer.writerows(tracking_data)
+            
         loss = loss.mean()
 
-
         if self.epoch_idx == 0:
+        #     self.train_items += [int(i) for i in pos_item.tolist()]
             for u, i in list(zip(user.tolist(), pos_item.tolist())):
                 self.train_data_dist[u].append(self.item_labels.loc[i])
 

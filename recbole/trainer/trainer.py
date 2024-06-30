@@ -52,6 +52,7 @@ import csv
 import pandas as pd
 import json
 import scipy
+from collections import Counter
 
 
 class AbstractTrainer(object):
@@ -148,6 +149,7 @@ class Trainer(AbstractTrainer):
         self.eval_type = config["eval_type"]
         self.eval_collector = Collector(config)
 
+        # Reads the classes each item and user belongs to
         self.item_info = pd.read_csv(f"dataset/{self.config['dataset']}/{self.config['dataset']}.item", sep="\t", engine="python", index_col=0, header=0)
         with open(f"dataset/remappings/{self.config['dataset']}.json") as f:
             remappings = json.load(f)
@@ -159,6 +161,16 @@ class Trainer(AbstractTrainer):
 
         self.model.user_labels = self.eval_collector.user_labels
         self.model.item_labels = self.eval_collector.item_labels
+
+        # Used for re-mapping item popularities for IPS
+        with open(f"train_item_counts_{self.config['dataset']}_{self.config['seed']}.json") as f:
+            self.model.train_item_counts = json.load(f)
+        self.model.train_item_counts = pd.Series([self.model.train_item_counts.count(i) for i in range(1, len(self.model.item_labels.index)+1)], index=range(1, len(self.model.item_labels.index)+1))
+        self.model.train_item_counts = self.model.train_item_counts - min(self.model.train_item_counts.loc[self.model.train_item_counts != 0])
+        IPS_max = 10 # Controls the maximum value of the range
+        self.model.train_item_counts = self.model.train_item_counts / max(self.model.train_item_counts) * (IPS_max - 1)
+        self.model.train_item_counts.loc[self.model.train_item_counts < 0] = -1
+        self.model.train_item_counts = self.model.train_item_counts + 1
 
         self.evaluator = Evaluator(config)
         self.item_tensor = None
@@ -279,13 +291,6 @@ class Trainer(AbstractTrainer):
                 )
             self._check_nan(loss)
             scaler.scale(loss + sync_loss).backward()
-            # for name, para in self.model.named_parameters():
-            #     if "user" in name:
-            #         idx, grad = self.model.test_grads
-            #         u = idx[0]
-            #         u_grad = [grad[i][0] for i in range(len(idx)) if idx[i] == u]
-            #         print(f"\n{u} test: {sum(u_grad)} {u_grad}")
-            #         print(f"{u} para: {para.grad[u][0]}")
             
             # if self.clip_grad_norm:
             #     clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
@@ -297,7 +302,13 @@ class Trainer(AbstractTrainer):
             #     )
 
         # if self.model.epoch_idx == 0:
-        #     self.model.train_data_dist = {user_idx: [(np.array(self.model.train_data_dist[user_idx]) == item_label).sum() / len(self.model.train_data_dist[user_idx]) if len(self.model.train_data_dist[user_idx]) > 0 else np.array([0.0]) for item_label in ["H", "M", "T"]] for user_idx in self.model.train_data_dist.keys()}
+            # print(pd.Series([self.model.train_items.count() for i in sorted]))
+            # print(self.model.train_item_counts)
+
+            # with open(f"train_item_counts_{self.config['dataset']}_{self.config['seed']}.json", "w") as f:
+            #     json.dump(self.model.train_items, f)
+
+            # self.model.train_data_dist = {user_idx: [(np.array(self.model.train_data_dist[user_idx]) == item_label).sum() / len(self.model.train_data_dist[user_idx]) if len(self.model.train_data_dist[user_idx]) > 0 else np.array([0.0]) for item_label in ["H", "M", "T"]] for user_idx in self.model.train_data_dist.keys()}
         
         return total_loss
 
@@ -445,7 +456,16 @@ class Trainer(AbstractTrainer):
         N = len(x)
         
         return (1/(N-1))*sum(np.array([(2*k - N - 1) for k in range(1, len(x)+1)]) * sorted(x))
-
+    
+    # Used for Gini-Index to prevent dividing by negative scores
+    def rescale_scores(self, scores):
+        scores = np.array(scores)
+        scores[scores == -np.inf] = scores[scores != -np.inf].min() - 1
+        rescaled_scores = (scores - scores.min()) / (scores.max() - scores.min())
+        if 0 in rescaled_scores:
+            rescaled_scores[rescaled_scores == 0] = (rescaled_scores[rescaled_scores != 0].min() / 2)
+        
+        return rescaled_scores
 
     def fit(
         self,
@@ -606,7 +626,7 @@ class Trainer(AbstractTrainer):
 
     @torch.no_grad()
     def evaluate(
-        self, eval_data, load_best_model=True, model_file=None, show_progress=False, calibrate=False, gini=False, upd=False
+        self, eval_data, load_best_model=True, model_file=None, show_progress=False, calibrate=False, uncertainty=False, gini=False, upd=False
     ):
         r"""Evaluate the model based on the eval data.
 
@@ -669,7 +689,7 @@ class Trainer(AbstractTrainer):
             self.eval_collector.same_items = []
             self.eval_collector.score_avgs = [[], [], []]
 
-        store_predictions = False
+        store_predictions = True
         if store_predictions:
             pred_dict = {}
 
@@ -682,7 +702,7 @@ class Trainer(AbstractTrainer):
                     set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
                 )
             self.eval_collector.eval_batch_collect(
-                scores, interaction, positive_u, positive_i, self.model.train_data_dist[user_idx], calibrate
+                scores, interaction, positive_u, positive_i, self.model.train_data_dist[user_idx], calibrate, uncertainty
             )
 
             if gini or upd:
@@ -697,22 +717,28 @@ class Trainer(AbstractTrainer):
             if store_predictions:
                 pred_dict[user_idx] = self.eval_collector.topk_idx.tolist()
 
+        # Used to store scores needed for PUFR
+        # if gini:
+        #     with open(f"scores_{self.config['dataset']}_{self.config['seed']}.json", "w") as f:
+        #             json.dump(all_scores, f)
+
         if gini:
+            rescaled_scores = self.rescale_scores(scores[0])
             item_freqs_binary = np.array([len(all_predicted_items[item_idx]) for item_idx in all_predicted_items.keys()], dtype='float64')
-            item_freqs_binary_merit = np.array([len(all_predicted_items[item_idx]) / scores[0][item_idx] for item_idx in all_predicted_items.keys()], dtype='float64')
+            item_freqs_binary_merit = np.array([len(all_predicted_items[item_idx]) / rescaled_scores[item_idx] for item_idx in all_predicted_items.keys()], dtype='float64')
             item_freqs_binary /= sum(item_freqs_binary)
             item_freqs_binary_merit /= sum(item_freqs_binary_merit)
 
             item_freqs_positional = np.array([sum(np.log(np.array(all_predicted_items[item_idx]) + 1)**-1) for item_idx in all_predicted_items.keys()])
-            item_freqs_positional_merit = np.array([sum(np.log(np.array(all_predicted_items[item_idx]) + 1)**-1) / scores[0][item_idx] for item_idx in all_predicted_items.keys()])
+            item_freqs_positional_merit = np.array([sum(np.log(np.array(all_predicted_items[item_idx]) + 1)**-1) / rescaled_scores[item_idx] for item_idx in all_predicted_items.keys()])
             item_freqs_positional /= sum(item_freqs_positional)
             item_freqs_positional_merit /= sum(item_freqs_positional_merit)
 
-            print(self.gini_coefficient(sorted(item_freqs_binary, reverse=True)), self.gini_coefficient(sorted(item_freqs_positional, reverse=True)))
-            print(self.gini_coefficient(sorted([v for v in item_freqs_binary if v > 0.0], reverse=True)), self.gini_coefficient(sorted([v for v in item_freqs_positional if v > 0.0], reverse=True)))
-
-            # print(self.gini_coefficient(sorted(item_freqs_binary_merit, reverse=True)), self.gini_coefficient(sorted(item_freqs_positional_merit, reverse=True)))
-            # print(self.gini_coefficient(sorted([v for v in item_freqs_binary_merit if v > 0.0], reverse=True)), self.gini_coefficient(sorted([v for v in item_freqs_positional_merit if v > 0.0], reverse=True)))
+            print("Gini-Index:")
+            print(f"Binary: {self.gini_coefficient(sorted(item_freqs_binary, reverse=True))}")
+            print(f"Positional: {self.gini_coefficient(sorted(item_freqs_positional, reverse=True))}")
+            print(f"Binary Merit: {self.gini_coefficient(sorted(item_freqs_binary_merit, reverse=True))}")
+            print(f"Positional Merit: {self.gini_coefficient(sorted(item_freqs_positional_merit, reverse=True))}")
 
         if upd:
             upd = {user_idx: scipy.spatial.distance.jensenshannon(prediction_dist[user_idx] + 0.0001, torch.tensor(self.model.train_data_dist[user_idx]) + 0.0001)**2 for user_idx in prediction_dist.keys()}    
@@ -724,7 +750,7 @@ class Trainer(AbstractTrainer):
             print(f"Unique items predicted: {len([all_predicted_items[i] for i in all_predicted_items.keys() if len(all_predicted_items[i]) > 0])}")
 
         if calibrate:
-            print(f"Same items as before calibration: {round(np.array(self.eval_collector.same_items).mean(), 2)}%")
+            print(f"Same items as before calibration: {round(np.array(self.eval_collector.same_items).mean(), 2)*100}%")
             print(f"Avg of top-10 scores: {np.array(self.eval_collector.score_avgs[0]).mean()}")
             print(f"Avg of 11-20 scores: {np.array(self.eval_collector.score_avgs[1]).mean()}")
             print(f"Avg of 11-50 scores: {np.array(self.eval_collector.score_avgs[2]).mean()}")

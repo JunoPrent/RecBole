@@ -22,7 +22,13 @@ dataset/remappings.json
 dataset/training_losses
 hyper.test
 hyper_example*
+item_losses*
 job.job
-predictions.json
+predictions*
+scores*.json
 test.py
+thesis_plots*
+train_item_counts*
 training_losses.csv
+uncertainty*
+user_losses*
